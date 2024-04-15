@@ -33,9 +33,9 @@ namespace Microsoft.FileFormats.PDB
         public uint Reserved;
 
         #region Validation Rules
-        public ValidationRule IsMagicValid
+        public bool IsMagicValid
         {
-            get { return new ValidationRule("PDB header magic is invalid", () => Magic.SequenceEqual(ExpectedMagic)); }
+            get { return Magic.SequenceEqual(ExpectedMagic); }
         }
         #endregion
     }

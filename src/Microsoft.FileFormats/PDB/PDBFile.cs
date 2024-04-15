@@ -8,23 +8,50 @@ namespace Microsoft.FileFormats.PDB
 {
     public class PDBFile : IDisposable
     {
-        private readonly Reader _reader;
-        private readonly Lazy<PDBFileHeader> _header;
-        private readonly Lazy<Reader[]> _streams;
+        private readonly IMSFFile _msfFile;
         private readonly Lazy<PDBNameStream> _nameStream;
         private readonly Lazy<DbiStream> _dbiStream;
 
-        public PDBFile(IAddressSpace dataSource)
+        private PDBFile(IMSFFile msfFile)
         {
-            _reader = new Reader(dataSource);
-            _header = new Lazy<PDBFileHeader>(() => _reader.Read<PDBFileHeader>(0));
-            _streams = new Lazy<Reader[]>(ReadDirectory);
-            _nameStream = new Lazy<PDBNameStream>(() => new PDBNameStream(Streams[1]));
-            _dbiStream = new Lazy<DbiStream>(() => new DbiStream(Streams[3]));
+            _msfFile = msfFile;
+            _nameStream = new Lazy<PDBNameStream>(() => new PDBNameStream(msfFile.GetStream(1)));
+            _dbiStream = new Lazy<DbiStream>(() => new DbiStream(msfFile.GetStream(3)));
         }
 
-        public PDBFileHeader Header { get { return _header.Value; } }
-        public IList<Reader> Streams { get { return _streams.Value; } }
+        public static PDBFile Open(IAddressSpace dataSource)
+        {
+            Reader reader = new Reader(dataSource);
+
+            if (reader.Length > reader.SizeOf<PDBFileHeader>())
+            {
+                var msfFileHeader = reader.Read<PDBFileHeader>(0);
+                if (msfFileHeader.IsMagicValid)
+                {
+                    MSFFile msfFile = MSFFile.OpenInternal(reader, msfFileHeader);
+                    if (msfFile != null)
+                    {
+                        return new PDBFile(msfFile);
+                    }
+                }
+            }
+
+            if (reader.Length > reader.SizeOf<MSFZFileHeader>())
+            {
+                var msfzFileHeader = reader.Read<MSFZFileHeader>(0);
+                if (msfzFileHeader.IsMagicValid)
+                {
+                    MSFZFile msfzFile = MSFZFile.Open(dataSource);
+                    if (msfzFile != null)
+                    {
+                        return new PDBFile(msfzFile);
+                    }                    
+                }
+            }
+
+            throw new BadInputFormatException("The specified file is not a PDB (uses neither MSF nor MSFZ container format).");
+        }
+
         public PDBNameStream NameStream { get { return _nameStream.Value; } }
         public DbiStream DbiStream { get { return _dbiStream.Value; } }
         public uint Age { get { return NameStream.Header.Age; } }
@@ -33,51 +60,14 @@ namespace Microsoft.FileFormats.PDB
 
         public void Dispose()
         {
-            if (_reader.DataSource is IDisposable disposable)
+            var msfFile = _msfFile as IDisposable;
+            if (msfFile != null)
             {
-                disposable.Dispose();
+                msfFile.Dispose();
             }
         }
 
-        public bool IsValid()
-        {
-            if (_reader.Length > _reader.SizeOf<PDBFileHeader>()) {
-                return Header.IsMagicValid.Check();
-            }
-            return false;
-        }
 
-        private Reader[] ReadDirectory()
-        {
-            Header.IsMagicValid.CheckThrowing();
-            uint secondLevelPageCount = ToPageCount(Header.DirectorySize);
-            ulong pageIndicesOffset = _reader.SizeOf<PDBFileHeader>();
-            PDBPagedAddressSpace secondLevelPageList = CreatePagedAddressSpace(_reader.DataSource, pageIndicesOffset, secondLevelPageCount * sizeof(uint));
-            PDBPagedAddressSpace directoryContent = CreatePagedAddressSpace(secondLevelPageList, 0, Header.DirectorySize);
-
-            Reader directoryReader = new Reader(directoryContent);
-            ulong position = 0;
-            uint countStreams = directoryReader.Read<uint>(ref position);
-            uint[] streamSizes = directoryReader.ReadArray<uint>(ref position, countStreams);
-            Reader[] streams = new Reader[countStreams];
-            for (uint i = 0; i < streamSizes.Length; i++)
-            {
-                streams[i] = new Reader(CreatePagedAddressSpace(directoryContent, position, streamSizes[i]));
-                position += ToPageCount(streamSizes[i]) * sizeof(uint);
-            }
-            return streams;
-        }
-
-        private PDBPagedAddressSpace CreatePagedAddressSpace(IAddressSpace indicesData, ulong offset, uint length)
-        {
-            uint[] indices = new Reader(indicesData).ReadArray<uint>(offset, ToPageCount(length));
-            return new PDBPagedAddressSpace(_reader.DataSource, indices, Header.PageSize, length);
-        }
-
-        private uint ToPageCount(uint size)
-        {
-            return unchecked((Header.PageSize + size - 1) / Header.PageSize);
-        }
     }
 
     /// <summary>
@@ -151,7 +141,6 @@ namespace Microsoft.FileFormats.PDB
     {
         private readonly Reader _streamReader;
         private readonly Lazy<NameIndexStreamHeader> _header;
-
 
         public PDBNameStream(Reader streamReader)
         {
