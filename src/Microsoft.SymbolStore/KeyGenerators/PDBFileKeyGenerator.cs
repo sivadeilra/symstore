@@ -19,13 +19,20 @@ namespace Microsoft.SymbolStore.KeyGenerators
             : base(tracer)
         {
             StreamAddressSpace dataSource = new StreamAddressSpace(file.Stream);
-            _pdbFile = new PDBFile(dataSource);
+            try
+            {
+                _pdbFile = PDBFile.Open(dataSource);
+            }
+            catch
+            {
+                _pdbFile = null;
+            }
             _path = file.FileName;
         }
 
         public override bool IsValid()
         {
-            return _pdbFile.IsValid();
+            return _pdbFile != null;
         }
 
         public override IEnumerable<SymbolStoreKey> GetKeys(KeyTypeFlags flags)
